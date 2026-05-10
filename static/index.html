@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PyRun — Code Execution Engine</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #111118;
+      --panel: #16161f;
+      --border: #222232;
+      --accent: #7c6aff;
+      --accent-glow: rgba(124,106,255,0.25);
+      --green: #3dffa0;
+      --red: #ff4f6a;
+      --yellow: #ffd166;
+      --text: #e8e8f0;
+      --muted: #5a5a7a;
+      --font-mono: 'JetBrains Mono', monospace;
+      --font-display: 'Syne', sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-display);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* Noise texture overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.4;
+    }
+
+    /* Header */
+    header {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 32px;
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.1rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .logo-icon {
+      width: 32px; height: 32px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.9rem;
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    .badge {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      background: var(--border);
+      color: var(--muted);
+      padding: 3px 8px;
+      border-radius: 99px;
+      letter-spacing: 0.08em;
+    }
+
+    /* Main layout */
+    main {
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto 1fr;
+      gap: 0;
+      height: calc(100vh - 65px);
+    }
+
+    .toolbar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .lang-pill {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-glow);
+      border: 1px solid var(--accent);
+      padding: 4px 12px;
+      border-radius: 99px;
+      letter-spacing: 0.05em;
+    }
+
+    .toolbar-spacer { flex: 1; }
+
+    .snippet-btn {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--border);
+      padding: 5px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .snippet-btn:hover {
+      color: var(--text);
+      border-color: var(--muted);
+    }
+
+    .run-btn {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 0.85rem;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      padding: 8px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+      box-shadow: 0 0 20px var(--accent-glow);
+      letter-spacing: 0.02em;
+    }
+    .run-btn:hover:not(:disabled) {
+      background: #9381ff;
+      box-shadow: 0 0 32px rgba(124,106,255,0.5);
+      transform: translateY(-1px);
+    }
+    .run-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .run-btn .spinner {
+      width: 12px; height: 12px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      display: none;
+    }
+    .run-btn.loading .spinner { display: block; }
+    .run-btn.loading .run-icon { display: none; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Editor pane */
+    .editor-pane {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .pane-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot-red { background: #ff5f57; }
+    .dot-yellow { background: #ffbd2e; }
+    .dot-green { background: #28c840; }
+
+    .editor-wrapper {
+      flex: 1;
+      position: relative;
+      display: flex;
+      overflow: hidden;
+    }
+
+    .line-numbers {
+      padding: 16px 0;
+      width: 48px;
+      text-align: right;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.6;
+      color: var(--muted);
+      user-select: none;
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .line-numbers span {
+      display: block;
+      padding-right: 12px;
+    }
+
+    textarea#editor {
+      flex: 1;
+      padding: 16px;
+      background: var(--panel);
+      border: none;
+      outline: none;
+      resize: none;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.6;
+      color: var(--text);
+      tab-size: 4;
+      white-space: pre;
+      overflow-wrap: normal;
+      overflow-x: auto;
+      caret-color: var(--accent);
+    }
+
+    textarea#editor::selection {
+      background: rgba(124,106,255,0.3);
+    }
+
+    /* Output pane */
+    .output-pane {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .output-body {
+      flex: 1;
+      padding: 20px 24px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .output-body::-webkit-scrollbar { width: 6px; }
+    .output-body::-webkit-scrollbar-track { background: transparent; }
+    .output-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .output-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 12px;
+      color: var(--muted);
+    }
+
+    .output-placeholder .icon {
+      font-size: 2.5rem;
+      opacity: 0.3;
+    }
+
+    .output-placeholder p {
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--muted);
+    }
+
+    .status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .status-dot.success { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.error { background: var(--red); box-shadow: 0 0 6px var(--red); }
+    .status-dot.timeout { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+    .status-dot.running {
+      background: var(--accent);
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .output-success { color: var(--green); }
+    .output-error { color: var(--red); }
+    .output-timeout { color: var(--yellow); }
+
+    /* Output animation */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .output-result { animation: fadeIn 0.2s ease; }
+
+    /* Timer bar */
+    .timer-bar {
+      height: 2px;
+      background: var(--border);
+      position: relative;
+      overflow: hidden;
+    }
+    .timer-bar-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.1s linear;
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      main { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }
+      .editor-pane { min-height: 45vh; border-right: none; border-bottom: 1px solid var(--border); }
+      .output-pane { min-height: 35vh; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">⚡</div>
+    PyRun
+    <span class="badge">v1.0</span>
+  </div>
+  <div style="font-size:0.75rem; color: var(--muted); font-family: var(--font-mono);">
+    Empower Global Tech AI &mdash; Core Execution Engine
+  </div>
+</header>
+
+<main>
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <span class="lang-pill">Python 3</span>
+    <div class="toolbar-spacer"></div>
+    <button class="snippet-btn" onclick="loadSnippet('hello')">Hello World</button>
+    <button class="snippet-btn" onclick="loadSnippet('timeout')">Timeout Test</button>
+    <button class="snippet-btn" onclick="loadSnippet('math')">Math Example</button>
+    <button class="run-btn" id="runBtn" onclick="runCode()">
+      <span class="run-icon">▶ Run</span>
+      <span class="spinner"></span>
+    </button>
+  </div>
+
+  <!-- Editor Pane -->
+  <div class="editor-pane">
+    <div class="pane-header">
+      <span class="dot dot-red"></span>
+      <span class="dot dot-yellow"></span>
+      <span class="dot dot-green"></span>
+      &nbsp;&nbsp;main.py
+    </div>
+    <div class="editor-wrapper">
+      <div class="line-numbers" id="lineNumbers">
+        <span>1</span>
+      </div>
+      <textarea
+        id="editor"
+        spellcheck="false"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        placeholder="# Write your Python code here..."
+      >print("Hello Empower")</textarea>
+    </div>
+  </div>
+
+  <!-- Output Pane -->
+  <div class="output-pane">
+    <div class="pane-header">
+      OUTPUT &nbsp;/&nbsp; <span id="statusLabel">—</span>
+    </div>
+    <div class="timer-bar"><div class="timer-bar-fill" id="timerBar"></div></div>
+    <div class="output-body" id="outputBody">
+      <div class="output-placeholder">
+        <div class="icon">◎</div>
+        <p>AWAITING EXECUTION</p>
+      </div>
+    </div>
+    <div class="status-bar">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Ready</span>
+      <div style="flex:1"></div>
+      <span id="execTime"></span>
+    </div>
+  </div>
+</main>
+
+<script>
+  const BACKEND = "";
+
+  const editor = document.getElementById("editor");
+  const runBtn = document.getElementById("runBtn");
+  const outputBody = document.getElementById("outputBody");
+  const statusDot = document.getElementById("statusDot");
+  const statusText = document.getElementById("statusText");
+  const statusLabel = document.getElementById("statusLabel");
+  const execTime = document.getElementById("execTime");
+  const lineNumbers = document.getElementById("lineNumbers");
+  const timerBar = document.getElementById("timerBar");
+
+  // Line numbers
+  function updateLineNumbers() {
+    const lines = editor.value.split("\n").length;
+    lineNumbers.innerHTML = Array.from({length: lines}, (_, i) =>
+      `<span>${i + 1}</span>`
+    ).join("");
+  }
+  editor.addEventListener("input", updateLineNumbers);
+  editor.addEventListener("scroll", () => {
+    lineNumbers.scrollTop = editor.scrollTop;
+  });
+  updateLineNumbers();
+
+  // Tab key support
+  editor.addEventListener("keydown", (e) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      editor.value = editor.value.substring(0, start) + "    " + editor.value.substring(end);
+      editor.selectionStart = editor.selectionEnd = start + 4;
+      updateLineNumbers();
+    }
+    // Ctrl+Enter to run
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      runCode();
+    }
+  });
+
+  const snippets = {
+    hello: 'print("Hello Empower")',
+    timeout: 'while True:\n    pass',
+    math: `import math
+
+for i in range(1, 6):
+    print(f"sqrt({i}) = {math.sqrt(i):.4f}")`
+  };
+
+  function loadSnippet(key) {
+    editor.value = snippets[key];
+    updateLineNumbers();
+  }
+
+  let timerInterval = null;
+
+  function startTimer() {
+    const fill = document.getElementById("timerBar");
+    fill.style.width = "0%";
+    let elapsed = 0;
+    timerInterval = setInterval(() => {
+      elapsed += 100;
+      fill.style.width = Math.min((elapsed / 2000) * 100, 100) + "%";
+    }, 100);
+  }
+
+  function stopTimer() {
+    clearInterval(timerInterval);
+  }
+
+  async function runCode() {
+    const code = editor.value.trim();
+    if (!code) return;
+
+    // Loading state
+    runBtn.classList.add("loading");
+    runBtn.disabled = true;
+    statusDot.className = "status-dot running";
+    statusText.textContent = "Executing...";
+    statusLabel.textContent = "RUNNING";
+    execTime.textContent = "";
+    outputBody.innerHTML = `<div class="output-placeholder"><div class="icon" style="animation: pulse 1s ease-in-out infinite">⟳</div><p>RUNNING CODE...</p></div>`;
+    startTimer();
+
+    const t0 = performance.now();
+
+    try {
+      const res = await fetch(`${BACKEND}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+
+      const data = await res.json();
+      const ms = Math.round(performance.now() - t0);
+      stopTimer();
+      document.getElementById("timerBar").style.width = "100%";
+      setTimeout(() => { document.getElementById("timerBar").style.width = "0%"; }, 400);
+
+      execTime.textContent = `${ms}ms`;
+
+      if (data.status === "success") {
+        statusDot.className = "status-dot success";
+        statusLabel.textContent = "SUCCESS";
+        statusText.textContent = "Execution complete";
+        const out = data.stdout || "(no output)";
+        const errOut = data.stderr ? `\n<span class="output-error">STDERR:\n${escHtml(data.stderr)}</span>` : "";
+        outputBody.innerHTML = `<div class="output-result output-success">${escHtml(out)}${errOut}</div>`;
+      } else if (data.status === "timeout") {
+        statusDot.className = "status-dot timeout";
+        statusLabel.textContent = "TIMEOUT";
+        statusText.textContent = "Killed after 2s";
+        outputBody.innerHTML = `<div class="output-result output-timeout">⏱ Execution timed out after 2 seconds.\n\nYour code was stopped to protect the server.\nCheck for infinite loops or long-running operations.</div>`;
+      } else {
+        statusDot.className = "status-dot error";
+        statusLabel.textContent = "ERROR";
+        statusText.textContent = "Runtime error";
+        outputBody.innerHTML = `<div class="output-result output-error">${escHtml(data.stderr || "Unknown error")}</div>`;
+      }
+    } catch (err) {
+      stopTimer();
+      statusDot.className = "status-dot error";
+      statusLabel.textContent = "ERROR";
+      statusText.textContent = "Cannot reach backend";
+      outputBody.innerHTML = `<div class="output-result output-error">⚠ Could not connect to the backend.\n\nMake sure the FastAPI server is running on Render.\n\nError: ${escHtml(err.message)}</div>`;
+    } finally {
+      runBtn.classList.remove("loading");
+      runBtn.disabled = false;
+    }
+  }
+
+  function escHtml(str) {
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+</script>
+</body>
+</html>
